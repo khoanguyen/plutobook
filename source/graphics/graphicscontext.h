@@ -37,6 +37,7 @@ struct RadialGradientValues {
     float cx = 0.f;
     float cy = 0.f;
     float r = 0.f;
+    float r0 = 0.f; /* inner radius, non-zero for a repeating gradient that starts away from the centre */
 };
 
 enum class SpreadMethod {

@@ -11,6 +11,7 @@
 
 #include "resource.h"
 #include "geometry.h"
+#include "color.h"
 
 #include <memory>
 
@@ -89,6 +90,108 @@ struct is_a<BitmapImage> {
 
 class SVGDocument;
 class SVGSVGElement;
+
+/* A CSS gradient behaves as an image with no intrinsic size: it is resolved
+ * against the box it fills, so the geometry keywords and lengths survive here
+ * until paint time, when the container size is known. */
+enum class GradientImageType : uint8_t {
+    Linear,
+    Radial
+};
+
+enum class GradientShape : uint8_t {
+    Circle,
+    Ellipse
+};
+
+enum class GradientSizing : uint8_t {
+    ClosestSide,
+    ClosestCorner,
+    FarthestSide,
+    FarthestCorner,
+    Explicit
+};
+
+class GradientLength {
+public:
+    GradientLength() = default;
+    GradientLength(float value, bool percent)
+        : m_value(value), m_percent(percent), m_specified(true)
+    {}
+
+    float value() const { return m_value; }
+    bool isPercent() const { return m_percent; }
+    bool isSpecified() const { return m_specified; }
+    float resolve(float reference) const { return m_percent ? m_value * reference / 100.f : m_value; }
+
+private:
+    float m_value{0.f};
+    bool m_percent{false};
+    bool m_specified{false};
+};
+
+class GradientColorStop {
+public:
+    GradientColorStop(const Color& color, const GradientLength& position)
+        : m_color(color), m_position(position)
+    {}
+
+    const Color& color() const { return m_color; }
+    const GradientLength& position() const { return m_position; }
+
+private:
+    Color m_color;
+    GradientLength m_position;
+};
+
+using GradientColorStopList = std::vector<GradientColorStop>;
+
+class GradientImage final : public Image {
+public:
+    static RefPtr<GradientImage> createLinear(Heap* heap, bool repeating, bool hasAngle, float angle,
+        bool toLeft, bool toRight, bool toTop, bool toBottom, GradientColorStopList stops);
+    static RefPtr<GradientImage> createRadial(Heap* heap, bool repeating, GradientShape shape, GradientSizing sizing,
+        const GradientLength& radiusX, const GradientLength& radiusY,
+        const GradientLength& centerX, const GradientLength& centerY, GradientColorStopList stops);
+
+    void draw(GraphicsContext& context, const Rect& dstRect, const Rect& srcRect) final;
+    void drawPattern(GraphicsContext& context, const Rect& destRect, const Size& size, const Size& scale, const Point& phase) final;
+    void computeIntrinsicDimensions(float& intrinsicWidth, float& intrinsicHeight, double& intrinsicRatio) final;
+
+    void setContainerSize(const Size& size) final { m_containerSize = size; }
+    Size intrinsicSize() const final { return m_containerSize; }
+    Size size() const final { return m_containerSize; }
+
+private:
+    GradientImage(GradientImageType type, bool repeating, GradientColorStopList stops)
+        : m_type(type), m_repeating(repeating), m_stops(std::move(stops))
+    {}
+
+    void apply(GraphicsContext& context, const Size& size) const;
+    void applyLinear(GraphicsContext& context, const Size& size) const;
+    void applyRadial(GraphicsContext& context, const Size& size) const;
+
+    GradientImageType m_type;
+    bool m_repeating;
+    GradientColorStopList m_stops;
+    Size m_containerSize;
+
+    /* linear */
+    bool m_hasAngle{false};
+    float m_angle{180.f};
+    bool m_toLeft{false};
+    bool m_toRight{false};
+    bool m_toTop{false};
+    bool m_toBottom{false};
+
+    /* radial */
+    GradientShape m_shape{GradientShape::Ellipse};
+    GradientSizing m_sizing{GradientSizing::FarthestCorner};
+    GradientLength m_radiusX;
+    GradientLength m_radiusY;
+    GradientLength m_centerX;
+    GradientLength m_centerY;
+};
 
 class SVGImage final : public Image {
 public:

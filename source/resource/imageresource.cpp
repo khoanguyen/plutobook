@@ -394,6 +394,315 @@ BitmapImage::BitmapImage(cairo_surface_t* surface)
 {
 }
 
+RefPtr<GradientImage> GradientImage::createLinear(Heap* heap, bool repeating, bool hasAngle, float angle,
+    bool toLeft, bool toRight, bool toTop, bool toBottom, GradientColorStopList stops)
+{
+    auto image = adoptPtr(new (heap) GradientImage(GradientImageType::Linear, repeating, std::move(stops)));
+    image->m_hasAngle = hasAngle;
+    image->m_angle = angle;
+    image->m_toLeft = toLeft;
+    image->m_toRight = toRight;
+    image->m_toTop = toTop;
+    image->m_toBottom = toBottom;
+    return image;
+}
+
+RefPtr<GradientImage> GradientImage::createRadial(Heap* heap, bool repeating, GradientShape shape, GradientSizing sizing,
+    const GradientLength& radiusX, const GradientLength& radiusY,
+    const GradientLength& centerX, const GradientLength& centerY, GradientColorStopList stops)
+{
+    auto image = adoptPtr(new (heap) GradientImage(GradientImageType::Radial, repeating, std::move(stops)));
+    image->m_shape = shape;
+    image->m_sizing = sizing;
+    image->m_radiusX = radiusX;
+    image->m_radiusY = radiusY;
+    image->m_centerX = centerX;
+    image->m_centerY = centerY;
+    return image;
+}
+
+void GradientImage::computeIntrinsicDimensions(float& intrinsicWidth, float& intrinsicHeight, double& intrinsicRatio)
+{
+    /* A gradient has no intrinsic size or ratio, so it fills its positioning area. */
+    intrinsicWidth = 0.f;
+    intrinsicHeight = 0.f;
+    intrinsicRatio = 0.0;
+}
+
+/* Resolves the color stops onto the gradient line, following the CSS rules: the
+ * first and last positions default to the ends, a position never moves backwards
+ * past the one before it, and runs without positions are spread evenly. The
+ * offsets are returned normalised to the span the stops actually cover, which is
+ * also the span a repeating gradient repeats over. */
+static GradientStops resolveGradientStops(const GradientColorStopList& stops, float lineLength, bool repeating, float& firstOffset, float& lastOffset)
+{
+    const auto count = stops.size();
+    std::vector<float> offsets(count, 0.f);
+    std::vector<bool> resolved(count, false);
+    for(size_t index = 0; index < count; ++index) {
+        const auto& position = stops[index].position();
+        if(!position.isSpecified())
+            continue;
+        if(position.isPercent())
+            offsets[index] = position.value() / 100.f;
+        else if(lineLength > 0.f)
+            offsets[index] = position.value() / lineLength;
+        resolved[index] = true;
+    }
+
+    if(!resolved.front()) {
+        offsets.front() = 0.f;
+        resolved.front() = true;
+    }
+
+    if(!resolved.back()) {
+        offsets.back() = 1.f;
+        resolved.back() = true;
+    }
+
+    auto maximum = offsets.front();
+    for(size_t index = 1; index < count; ++index) {
+        if(!resolved[index])
+            continue;
+        offsets[index] = std::max(offsets[index], maximum);
+        maximum = offsets[index];
+    }
+
+    size_t index = 1;
+    while(index < count) {
+        if(resolved[index]) {
+            ++index;
+            continue;
+        }
+
+        auto end = index;
+        while(end < count && !resolved[end])
+            ++end;
+        const auto before = offsets[index - 1];
+        const auto after = offsets[end];
+        const auto steps = end - index + 1;
+        for(size_t position = index; position < end; ++position)
+            offsets[position] = before + (after - before) * (position - index + 1) / steps;
+        index = end;
+    }
+
+    firstOffset = offsets.front();
+    lastOffset = offsets.back();
+
+    GradientStops result;
+    result.reserve(count);
+
+    /* Every stop landing on the same position is a hard edge: the first color
+     * applies before it and the last one after, which a span just wide enough to
+     * hold the two ends reproduces. A repeating gradient has nothing to repeat in
+     * that case and is a solid color instead, which the caller handles. */
+    if(lastOffset <= firstOffset) {
+        if(repeating)
+            return result;
+        lastOffset = firstOffset + std::max(1.f / std::max(1.f, lineLength), 1e-4f);
+        for(size_t position = 0; position < count; ++position)
+            result.emplace_back(position == 0 ? 0.f : 1.f, stops[position].color());
+        return result;
+    }
+
+    const auto span = lastOffset - firstOffset;
+    for(size_t position = 0; position < count; ++position) {
+        const auto offset = (offsets[position] - firstOffset) / span;
+        result.emplace_back(std::clamp(offset, 0.f, 1.f), stops[position].color());
+    }
+
+    return result;
+}
+
+void GradientImage::applyLinear(GraphicsContext& context, const Size& size) const
+{
+    auto angle = m_angle;
+    if(!m_hasAngle && (m_toLeft || m_toRight || m_toTop || m_toBottom)) {
+        if(m_toLeft && m_toTop) {
+            angle = 360.f - rad2deg(std::atan2(size.w, size.h));
+        } else if(m_toLeft && m_toBottom) {
+            angle = 180.f + rad2deg(std::atan2(size.w, size.h));
+        } else if(m_toRight && m_toTop) {
+            angle = rad2deg(std::atan2(size.w, size.h));
+        } else if(m_toRight && m_toBottom) {
+            angle = 180.f - rad2deg(std::atan2(size.w, size.h));
+        } else if(m_toLeft) {
+            angle = 270.f;
+        } else if(m_toRight) {
+            angle = 90.f;
+        } else if(m_toTop) {
+            angle = 0.f;
+        } else {
+            angle = 180.f;
+        }
+    }
+
+    /* Zero degrees points to the top and angles grow clockwise. */
+    const auto radians = deg2rad(angle);
+    const auto sinAngle = std::sin(radians);
+    const auto cosAngle = std::cos(radians);
+    const auto lineLength = std::abs(size.w * sinAngle) + std::abs(size.h * cosAngle);
+
+    float firstOffset = 0.f;
+    float lastOffset = 1.f;
+    auto stops = resolveGradientStops(m_stops, lineLength, m_repeating, firstOffset, lastOffset);
+    if(stops.empty()) {
+        context.setColor(m_stops.back().color());
+        context.fillRect(Rect(0, 0, size.w, size.h));
+        return;
+    }
+
+    const auto centerX = size.w / 2.f;
+    const auto centerY = size.h / 2.f;
+    const auto halfX = sinAngle * lineLength / 2.f;
+    const auto halfY = -cosAngle * lineLength / 2.f;
+
+    LinearGradientValues values;
+    values.x1 = centerX - halfX + (halfX * 2.f) * firstOffset;
+    values.y1 = centerY - halfY + (halfY * 2.f) * firstOffset;
+    values.x2 = centerX - halfX + (halfX * 2.f) * lastOffset;
+    values.y2 = centerY - halfY + (halfY * 2.f) * lastOffset;
+
+    context.setLinearGradient(values, stops, Transform(), m_repeating ? SpreadMethod::Repeat : SpreadMethod::Pad, 1.f);
+    context.fillRect(Rect(0, 0, size.w, size.h));
+}
+
+void GradientImage::applyRadial(GraphicsContext& context, const Size& size) const
+{
+    const auto centerX = m_centerX.isSpecified() ? m_centerX.resolve(size.w) : size.w / 2.f;
+    const auto centerY = m_centerY.isSpecified() ? m_centerY.resolve(size.h) : size.h / 2.f;
+
+    const auto leftDistance = std::abs(centerX);
+    const auto rightDistance = std::abs(size.w - centerX);
+    const auto topDistance = std::abs(centerY);
+    const auto bottomDistance = std::abs(size.h - centerY);
+
+    float radiusX = 0.f;
+    float radiusY = 0.f;
+    switch(m_sizing) {
+    case GradientSizing::Explicit:
+        radiusX = m_radiusX.resolve(size.w);
+        radiusY = m_shape == GradientShape::Circle ? radiusX : m_radiusY.resolve(size.h);
+        break;
+    case GradientSizing::ClosestSide:
+    case GradientSizing::FarthestSide: {
+        const auto closest = m_sizing == GradientSizing::ClosestSide;
+        const auto sideX = closest ? std::min(leftDistance, rightDistance) : std::max(leftDistance, rightDistance);
+        const auto sideY = closest ? std::min(topDistance, bottomDistance) : std::max(topDistance, bottomDistance);
+        if(m_shape == GradientShape::Circle) {
+            radiusX = radiusY = closest ? std::min(sideX, sideY) : std::max(sideX, sideY);
+        } else {
+            radiusX = sideX;
+            radiusY = sideY;
+        }
+
+        break;
+    }
+
+    case GradientSizing::ClosestCorner:
+    case GradientSizing::FarthestCorner: {
+        const auto closest = m_sizing == GradientSizing::ClosestCorner;
+        const auto cornerX = closest ? std::min(leftDistance, rightDistance) : std::max(leftDistance, rightDistance);
+        const auto cornerY = closest ? std::min(topDistance, bottomDistance) : std::max(topDistance, bottomDistance);
+        if(m_shape == GradientShape::Circle) {
+            radiusX = radiusY = std::sqrt(cornerX * cornerX + cornerY * cornerY);
+        } else {
+            /* An ellipse through the corner keeps the aspect ratio of the
+             * matching side-sized ellipse. */
+            const auto sideX = closest ? std::min(leftDistance, rightDistance) : std::max(leftDistance, rightDistance);
+            const auto sideY = closest ? std::min(topDistance, bottomDistance) : std::max(topDistance, bottomDistance);
+            const auto ratio = sideY > 0.f ? sideX / sideY : 1.f;
+            radiusX = std::sqrt(cornerX * cornerX + (cornerY * ratio) * (cornerY * ratio));
+            radiusY = ratio > 0.f ? radiusX / ratio : radiusX;
+        }
+
+        break;
+    }
+    }
+
+    float firstOffset = 0.f;
+    float lastOffset = 1.f;
+    auto stops = resolveGradientStops(m_stops, radiusX, m_repeating, firstOffset, lastOffset);
+    if(stops.empty() || radiusX <= 0.f || radiusY <= 0.f) {
+        context.setColor(m_stops.back().color());
+        context.fillRect(Rect(0, 0, size.w, size.h));
+        return;
+    }
+
+    RadialGradientValues values;
+    values.cx = centerX;
+    values.cy = centerY;
+    values.fx = centerX;
+    values.fy = centerY;
+    values.r = radiusX * lastOffset;
+    values.r0 = std::max(0.f, radiusX * firstOffset);
+
+    /* Cairo draws circles, so an ellipse is a circle under a scale about its centre. */
+    Transform transform;
+    if(radiusY != radiusX) {
+        transform.translate(centerX, centerY);
+        transform.scale(1.f, radiusY / radiusX);
+        transform.translate(-centerX, -centerY);
+    }
+
+    context.setRadialGradient(values, stops, transform, m_repeating ? SpreadMethod::Repeat : SpreadMethod::Pad, 1.f);
+    context.fillRect(Rect(0, 0, size.w, size.h));
+}
+
+void GradientImage::apply(GraphicsContext& context, const Size& size) const
+{
+    if(m_stops.empty() || size.isEmpty())
+        return;
+    if(m_type == GradientImageType::Linear) {
+        applyLinear(context, size);
+    } else {
+        applyRadial(context, size);
+    }
+}
+
+void GradientImage::draw(GraphicsContext& context, const Rect& dstRect, const Rect& srcRect)
+{
+    if(dstRect.isEmpty() || srcRect.isEmpty()) {
+        return;
+    }
+
+    const auto xScale = dstRect.w / srcRect.w;
+    const auto yScale = dstRect.h / srcRect.h;
+
+    context.save();
+    context.clipRect(dstRect);
+    context.translate(dstRect.x - srcRect.x * xScale, dstRect.y - srcRect.y * yScale);
+    context.scale(xScale, yScale);
+    apply(context, m_containerSize);
+    context.restore();
+}
+
+void GradientImage::drawPattern(GraphicsContext& context, const Rect& destRect, const Size& size, const Size& scale, const Point& phase)
+{
+    assert(!destRect.isEmpty() && !size.isEmpty() && !scale.isEmpty());
+
+    cairo_rectangle_t rectangle = {0, 0, size.w * scale.w, size.h * scale.h};
+    auto surface = cairo_recording_surface_create(CAIRO_CONTENT_COLOR_ALPHA, &rectangle);
+    auto canvas = cairo_create(surface);
+
+    GradientImage* image = this;
+    GraphicsContext tileContext(canvas);
+    tileContext.scale(scale.w, scale.h);
+    image->apply(tileContext, size);
+
+    Transform transform;
+    transform.translate(phase.x, phase.y);
+
+    context.save();
+    context.clipRect(destRect);
+    context.setPattern(surface, transform);
+    context.fillRect(destRect);
+    context.restore();
+
+    cairo_destroy(canvas);
+    cairo_surface_destroy(surface);
+}
+
 RefPtr<SVGImage> SVGImage::create(Book* book, std::string_view content, std::string_view baseUrl)
 {
     auto document = SVGDocument::create(book, ResourceLoader::completeUrl(baseUrl));

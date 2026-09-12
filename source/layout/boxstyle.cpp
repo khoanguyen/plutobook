@@ -2281,8 +2281,88 @@ Paint BoxStyle::convertPaint(const CSSValue& value) const
     return Paint(convertColor(value));
 }
 
+static GradientLength convertGradientLength(const BoxStyle& style, const CSSValue* value)
+{
+    if(value == nullptr)
+        return GradientLength();
+    const auto length = style.convertLengthOrPercent(*value);
+    if(length.isPercent())
+        return GradientLength(length.value(), true);
+    return GradientLength(length.value(), false);
+}
+
+static GradientColorStopList convertGradientStops(const BoxStyle& style, const CSSGradientValue& gradient)
+{
+    GradientColorStopList stops;
+    stops.reserve(gradient.stops().size());
+    for(const auto& stop : gradient.stops()) {
+        stops.emplace_back(style.convertColor(*stop.color()),
+            convertGradientLength(style, stop.position().get()));
+    }
+
+    return stops;
+}
+
+RefPtr<Image> BoxStyle::convertGradient(const CSSValue& value) const
+{
+    const auto& gradient = to<CSSGradientValue>(value);
+    auto stops = convertGradientStops(*this, gradient);
+    if(gradient.isLinearGradientValue()) {
+        const auto& linear = to<CSSLinearGradientValue>(value);
+        auto angle = 180.f;
+        auto hasAngle = false;
+        if(const auto& value = linear.angle()) {
+            angle = to<CSSAngleValue>(*value).valueInDegrees();
+            hasAngle = true;
+        }
+
+        return GradientImage::createLinear(heap(), gradient.isRepeating(), hasAngle, angle,
+            linear.sideX() == CSSValueID::Left, linear.sideX() == CSSValueID::Right,
+            linear.sideY() == CSSValueID::Top, linear.sideY() == CSSValueID::Bottom,
+            std::move(stops));
+    }
+
+    const auto& radial = to<CSSRadialGradientValue>(value);
+    auto shape = radial.shape() == CSSValueID::Circle ? GradientShape::Circle : GradientShape::Ellipse;
+    auto sizing = GradientSizing::FarthestCorner;
+    switch(radial.size()) {
+    case CSSValueID::ClosestSide:
+        sizing = GradientSizing::ClosestSide;
+        break;
+    case CSSValueID::ClosestCorner:
+        sizing = GradientSizing::ClosestCorner;
+        break;
+    case CSSValueID::FarthestSide:
+        sizing = GradientSizing::FarthestSide;
+        break;
+    default:
+        break;
+    }
+
+    if(radial.radiusX())
+        sizing = GradientSizing::Explicit;
+    GradientLength centerX;
+    GradientLength centerY;
+    if(const auto& position = radial.position()) {
+        const auto& pair = to<CSSPairValue>(*position);
+        const auto point = convertPositionCoordinate(pair);
+        if(!point.x().isAuto())
+            centerX = point.x().isPercent() ? GradientLength(point.x().value(), true) : GradientLength(point.x().value(), false);
+        if(!point.y().isAuto()) {
+            centerY = point.y().isPercent() ? GradientLength(point.y().value(), true) : GradientLength(point.y().value(), false);
+        }
+    }
+
+    return GradientImage::createRadial(heap(), gradient.isRepeating(), shape, sizing,
+        convertGradientLength(*this, radial.radiusX().get()),
+        convertGradientLength(*this, radial.radiusY().get()),
+        centerX, centerY, std::move(stops));
+}
+
 RefPtr<Image> BoxStyle::convertImage(const CSSValue& value) const
 {
+    if(value.type() == CSSValueType::Gradient)
+        return convertGradient(value);
     return to<CSSImageValue>(value).fetch(document());
 }
 

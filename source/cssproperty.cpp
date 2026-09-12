@@ -1182,6 +1182,19 @@ RefPtr<CSSImageValue> CSSImageValue::create(Heap* heap, Url value)
     return adoptPtr(new (heap) CSSImageValue(std::move(value)));
 }
 
+RefPtr<CSSLinearGradientValue> CSSLinearGradientValue::create(Heap* heap, bool repeating, RefPtr<CSSValue> angle,
+    CSSValueID sideX, CSSValueID sideY, CSSGradientStopList stops)
+{
+    return adoptPtr(new (heap) CSSLinearGradientValue(repeating, std::move(angle), sideX, sideY, std::move(stops)));
+}
+
+RefPtr<CSSRadialGradientValue> CSSRadialGradientValue::create(Heap* heap, bool repeating, CSSValueID shape, CSSValueID size,
+    RefPtr<CSSValue> radiusX, RefPtr<CSSValue> radiusY, RefPtr<CSSValue> position, CSSGradientStopList stops)
+{
+    return adoptPtr(new (heap) CSSRadialGradientValue(repeating, shape, size, std::move(radiusX),
+        std::move(radiusY), std::move(position), std::move(stops)));
+}
+
 const RefPtr<Image>& CSSImageValue::fetch(Document* document) const
 {
     if(m_image == nullptr) {

@@ -982,6 +982,7 @@ public:
     LengthSize convertBorderRadius(const CSSValue& value) const;
     Color convertColor(const CSSValue& value) const;
     Paint convertPaint(const CSSValue& value) const;
+    RefPtr<Image> convertGradient(const CSSValue& value) const;
     RefPtr<Image> convertImage(const CSSValue& value) const;
     RefPtr<Image> convertImageOrNone(const CSSValue& value) const;
     Float convertFloat(const CSSValue& value) const;

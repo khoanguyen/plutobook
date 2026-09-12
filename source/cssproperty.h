@@ -367,6 +367,8 @@ enum class CSSValueID : uint16_t {
     Circle,
     Clip,
     CloseQuote,
+    ClosestCorner,
+    ClosestSide,
     Collapse,
     Color,
     ColorBurn,
@@ -389,12 +391,15 @@ enum class CSSValueID : uint16_t {
     DiscretionaryLigatures,
     Dotted,
     Double,
+    Ellipse,
     Ellipsis,
     Embed,
     Emoji,
     End,
     Evenodd,
     Exclusion,
+    FarthestCorner,
+    FarthestSide,
     Expanded,
     Extends,
     ExtraCondensed,
@@ -601,6 +606,7 @@ enum class CSSValueType {
     LocalUrl,
     Url,
     Image,
+    Gradient,
     Color,
     Counter,
     FontFeature,
@@ -1180,6 +1186,107 @@ template<>
 struct is_a<CSSImageValue> {
     static bool check(const CSSValue& value) { return value.type() == CSSValueType::Image; }
 };
+
+/* CSS gradients. The geometry keywords are kept as identifiers and the lengths,
+ * angles and colors as values, so that the style layer can resolve them against
+ * the element's font and the painting layer against the box it fills. */
+class CSSGradientStop {
+public:
+    CSSGradientStop(RefPtr<CSSValue> color, RefPtr<CSSValue> position)
+        : m_color(std::move(color)), m_position(std::move(position))
+    {}
+
+    const RefPtr<CSSValue>& color() const { return m_color; }
+    const RefPtr<CSSValue>& position() const { return m_position; }
+
+private:
+    RefPtr<CSSValue> m_color;
+    RefPtr<CSSValue> m_position;
+};
+
+using CSSGradientStopList = std::pmr::vector<CSSGradientStop>;
+
+class CSSGradientValue : public CSSValue {
+public:
+    bool isRepeating() const { return m_repeating; }
+    const CSSGradientStopList& stops() const { return m_stops; }
+    CSSValueType type() const final { return CSSValueType::Gradient; }
+
+    virtual bool isLinearGradientValue() const { return false; }
+    virtual bool isRadialGradientValue() const { return false; }
+
+protected:
+    CSSGradientValue(bool repeating, CSSGradientStopList stops)
+        : m_repeating(repeating), m_stops(std::move(stops))
+    {}
+
+    bool m_repeating;
+    CSSGradientStopList m_stops;
+};
+
+template<>
+struct is_a<CSSGradientValue> {
+    static bool check(const CSSValue& value) { return value.type() == CSSValueType::Gradient; }
+};
+
+class CSSLinearGradientValue final : public CSSGradientValue {
+public:
+    static RefPtr<CSSLinearGradientValue> create(Heap* heap, bool repeating, RefPtr<CSSValue> angle,
+        CSSValueID sideX, CSSValueID sideY, CSSGradientStopList stops);
+
+    const RefPtr<CSSValue>& angle() const { return m_angle; }
+    CSSValueID sideX() const { return m_sideX; }
+    CSSValueID sideY() const { return m_sideY; }
+    bool isLinearGradientValue() const final { return true; }
+
+private:
+    CSSLinearGradientValue(bool repeating, RefPtr<CSSValue> angle, CSSValueID sideX, CSSValueID sideY, CSSGradientStopList stops)
+        : CSSGradientValue(repeating, std::move(stops))
+        , m_angle(std::move(angle)), m_sideX(sideX), m_sideY(sideY)
+    {}
+
+    RefPtr<CSSValue> m_angle;
+    CSSValueID m_sideX;
+    CSSValueID m_sideY;
+};
+
+template<>
+struct is_a<CSSLinearGradientValue> {
+    static bool check(const CSSValue& value) { return value.type() == CSSValueType::Gradient && to<CSSGradientValue>(value).isLinearGradientValue(); }
+};
+
+class CSSRadialGradientValue final : public CSSGradientValue {
+public:
+    static RefPtr<CSSRadialGradientValue> create(Heap* heap, bool repeating, CSSValueID shape, CSSValueID size,
+        RefPtr<CSSValue> radiusX, RefPtr<CSSValue> radiusY, RefPtr<CSSValue> position, CSSGradientStopList stops);
+
+    CSSValueID shape() const { return m_shape; }
+    CSSValueID size() const { return m_size; }
+    const RefPtr<CSSValue>& radiusX() const { return m_radiusX; }
+    const RefPtr<CSSValue>& radiusY() const { return m_radiusY; }
+    const RefPtr<CSSValue>& position() const { return m_position; }
+    bool isRadialGradientValue() const final { return true; }
+
+private:
+    CSSRadialGradientValue(bool repeating, CSSValueID shape, CSSValueID size, RefPtr<CSSValue> radiusX,
+        RefPtr<CSSValue> radiusY, RefPtr<CSSValue> position, CSSGradientStopList stops)
+        : CSSGradientValue(repeating, std::move(stops))
+        , m_shape(shape), m_size(size), m_radiusX(std::move(radiusX))
+        , m_radiusY(std::move(radiusY)), m_position(std::move(position))
+    {}
+
+    CSSValueID m_shape;
+    CSSValueID m_size;
+    RefPtr<CSSValue> m_radiusX;
+    RefPtr<CSSValue> m_radiusY;
+    RefPtr<CSSValue> m_position;
+};
+
+template<>
+struct is_a<CSSRadialGradientValue> {
+    static bool check(const CSSValue& value) { return value.type() == CSSValueType::Gradient && to<CSSGradientValue>(value).isRadialGradientValue(); }
+};
+
 
 class CSSColorValue final : public CSSValue {
 public:

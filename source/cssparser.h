@@ -112,6 +112,9 @@ private:
     RefPtr<CSSValue> consumeLocalUrlOrNone(CSSTokenStream& input);
     RefPtr<CSSValue> consumeUrl(CSSTokenStream& input);
     RefPtr<CSSValue> consumeUrlOrNone(CSSTokenStream& input);
+    bool consumeGradientStops(CSSTokenStream& input, CSSGradientStopList& stops);
+    RefPtr<CSSValue> consumeLinearGradient(CSSTokenStream& input, bool repeating);
+    RefPtr<CSSValue> consumeRadialGradient(CSSTokenStream& input, bool repeating);
     RefPtr<CSSValue> consumeImage(CSSTokenStream& input);
     RefPtr<CSSValue> consumeImageOrNone(CSSTokenStream& input);
     RefPtr<CSSValue> consumeColor(CSSTokenStream& input);
